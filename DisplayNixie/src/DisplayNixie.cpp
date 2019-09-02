@@ -9,11 +9,12 @@
 #include <iostream>
 #include <wiringPi.h>
 #include <wiringPiSPI.h>
-#include <ctime>
 #include <string.h>
 #include <wiringPiI2C.h>
 #include <softTone.h>
 #include <softPwm.h>
+#include <time.h>
+#include <math.h>
 
 using namespace std;
 #define LEpin 3
@@ -53,10 +54,16 @@ using namespace std;
 #define RIGHT_REPR_START 2
 #define RIGHT_BUFFER_START 4
 
+#define PI 3.14159265
+
 uint16_t SymbolArray[10]={1, 2, 4, 8, 16, 32, 64, 128, 256, 512};
 
 tm date;
 int fileDesc;
+double oscillator = 0.0;
+bool doFireworks = true;
+bool doFadingBlue = false;
+bool use24hour = false;
 int redLight = 100;
 int greenLight = 0;
 int blueLight = 0;
@@ -65,198 +72,200 @@ bool dotState = 0;
 int rotator = 0;
 
 int bcdToDec(int val) {
-	return ((val / 16  * 10) + (val % 16));
+  return ((val / 16  * 10) + (val % 16));
 }
 
 int decToBcd(int val) {
-	return ((val / 10  * 16) + (val % 10));
-}
-
-tm addSecondsToDate(tm date, int seconds) {
-	time_t timer = mktime(&date);
-	timer = timer + seconds;
-	return *(localtime(&timer));
-}
-
-tm getRTCDate() {
-	wiringPiI2CWrite(fileDesc, I2CFlush);
-	tm date;
-	date.tm_sec =  bcdToDec(wiringPiI2CReadReg8(fileDesc,SECOND_REGISTER));
-	date.tm_min =  bcdToDec(wiringPiI2CReadReg8(fileDesc,MINUTE_REGISTER));
-	date.tm_hour = bcdToDec(wiringPiI2CReadReg8(fileDesc,HOUR_REGISTER));
-	date.tm_wday = bcdToDec(wiringPiI2CReadReg8(fileDesc,WEEK_REGISTER));
-	date.tm_mday = bcdToDec(wiringPiI2CReadReg8(fileDesc,DAY_REGISTER));
-	date.tm_mon =  bcdToDec(wiringPiI2CReadReg8(fileDesc,MONTH_REGISTER));
-	date.tm_year = bcdToDec(wiringPiI2CReadReg8(fileDesc,YEAR_REGISTER));
-	return date;
-}
-
-void updateRTCHour(tm date) {
-	wiringPiI2CWrite(fileDesc, I2CFlush);
-	wiringPiI2CWriteReg8(fileDesc,HOUR_REGISTER,decToBcd(date.tm_hour));
-	wiringPiI2CWrite(fileDesc, I2CFlush);
-}
-
-void updateRTCMinute(tm date) {
-	wiringPiI2CWrite(fileDesc, I2CFlush);
-	wiringPiI2CWriteReg8(fileDesc,MINUTE_REGISTER,decToBcd(date.tm_min));
-	wiringPiI2CWriteReg8(fileDesc,HOUR_REGISTER,decToBcd(date.tm_hour));
-	wiringPiI2CWrite(fileDesc, I2CFlush);
-}
-void resetRTCSecond() {
-	wiringPiI2CWrite(fileDesc, I2CFlush);
-	wiringPiI2CWriteReg8(fileDesc,SECOND_REGISTER, 0);
-	wiringPiI2CWrite(fileDesc, I2CFlush);
-}
-
-void writeRTCDate(tm date) {
-	wiringPiI2CWrite(fileDesc, I2CFlush);
-	wiringPiI2CWriteReg8(fileDesc,SECOND_REGISTER,decToBcd(date.tm_sec));
-	wiringPiI2CWriteReg8(fileDesc,MINUTE_REGISTER,decToBcd(date.tm_min));
-	wiringPiI2CWriteReg8(fileDesc,HOUR_REGISTER,decToBcd(date.tm_hour));
-	wiringPiI2CWriteReg8(fileDesc,WEEK_REGISTER,decToBcd(date.tm_wday));
-	wiringPiI2CWriteReg8(fileDesc,DAY_REGISTER,decToBcd(date.tm_mday));
-	wiringPiI2CWriteReg8(fileDesc,MONTH_REGISTER,decToBcd(date.tm_mon));
-	wiringPiI2CWriteReg8(fileDesc,YEAR_REGISTER,decToBcd(date.tm_year));
-	wiringPiI2CWrite(fileDesc, I2CFlush);
+  return ((val / 10  * 16) + (val % 10));
 }
 
 void initPin(int pin) {
-	pinMode(pin, INPUT);
-	pullUpDnControl(pin, PUD_UP);
+  pinMode(pin, INPUT);
+  pullUpDnControl(pin, PUD_UP);
 
-}
-
-void funcMode(void) {
-	static unsigned long modeTime = 0;
-	if ((millis() - modeTime) > DEBOUNCE_DELAY) {
-		resetRTCSecond();
-		modeTime = millis();
-	}
 }
 
 uint32_t get32Rep(char * _stringToDisplay, int start) {
-	uint32_t var32 = 0;
+  uint32_t var32 = 0;
 
-	var32= (SymbolArray[_stringToDisplay[start]-0x30])<<20;
-	var32|=(SymbolArray[_stringToDisplay[start - 1]-0x30])<<10;
-	var32|=(SymbolArray[_stringToDisplay[start - 2]-0x30]);
-	return var32;
+  var32= (SymbolArray[_stringToDisplay[start]-0x30])<<20;
+  var32|=(SymbolArray[_stringToDisplay[start - 1]-0x30])<<10;
+  var32|=(SymbolArray[_stringToDisplay[start - 2]-0x30]);
+  return var32;
 }
 
 void fillBuffer(uint32_t var32, unsigned char * buffer, int start) {
-	buffer[start] = var32>>24;
-	buffer[start + 1] = var32>>16;
-	buffer[start + 2] = var32>>8;
-	buffer[start + 3] = var32;
+  buffer[start] = var32>>24;
+  buffer[start + 1] = var32>>16;
+  buffer[start + 2] = var32>>8;
+  buffer[start + 3] = var32;
 }
 
 void dotBlink()
 {
-	static unsigned int lastTimeBlink=millis();
+  static unsigned int lastTimeBlink=millis();
 
-	if ((millis() - lastTimeBlink) > 1000)
-	{
-		lastTimeBlink=millis();
-		dotState = !dotState;
-	}
+  if ((millis() - lastTimeBlink) > 1000)
+  {
+    lastTimeBlink=millis();
+    dotState = !dotState;
+  }
+}
+
+void fadingBlue() {
+  blueLight = int(abs(sin(oscillator*PI/180)*100));
+  oscillator += 0.5;
+  softPwmWrite(BLUE_LIGHT_PIN, blueLight);
 }
 
 void rotateFireWorks() {
-	int fireworks[] = {0,0,1,
-					  -1,0,0,
-			           0,1,0,
-					   0,0,-1,
-					   1,0,0,
-					   0,-1,0
-	};
-	redLight += fireworks[rotator * 3];
-	greenLight += fireworks[rotator * 3 + 1];
-	blueLight += fireworks[rotator * 3 + 2];
-	softPwmWrite(RED_LIGHT_PIN, redLight);
-	softPwmWrite(GREEN_LIGHT_PIN, greenLight);
-	softPwmWrite(BLUE_LIGHT_PIN, blueLight);
-	lightCycle = lightCycle + 1;
-	if (lightCycle == MAX_POWER) {
-		rotator = rotator + 1;
-		lightCycle  = 0;
-	}
-	if (rotator > 5)
-		rotator = 0;
+  int fireworks[] = {0,0,1,
+    -1,0,0,
+    0,1,0,
+    0,0,-1,
+    1,0,0,
+    0,-1,0
+  };
+  redLight += fireworks[rotator * 3];
+  greenLight += fireworks[rotator * 3 + 1];
+  blueLight += fireworks[rotator * 3 + 2];
+  softPwmWrite(RED_LIGHT_PIN, redLight);
+  softPwmWrite(GREEN_LIGHT_PIN, greenLight);
+  softPwmWrite(BLUE_LIGHT_PIN, blueLight);
+  lightCycle = lightCycle + 1;
+  if (lightCycle == MAX_POWER) {
+    rotator = rotator + 1;
+    lightCycle  = 0;
+  }
+  if (rotator > 5)
+    rotator = 0;
 }
 
 uint32_t addBlinkTo32Rep(uint32_t var) {
-	if (dotState)
-	{
-		var &=~LOWER_DOTS_MASK;
-		var &=~UPPER_DOTS_MASK;
-	}
-	else
-	{
-		var |=LOWER_DOTS_MASK;
-		var |=UPPER_DOTS_MASK;
-	}
-	return var;
+  if (dotState)
+  {
+    var &=~LOWER_DOTS_MASK;
+    var &=~UPPER_DOTS_MASK;
+  }
+  else
+  {
+    var |=LOWER_DOTS_MASK;
+    var |=UPPER_DOTS_MASK;
+  }
+  return var;
 }
 
 
 int main(int argc, char* argv[]) {
-	if (argc < 2)
-	{
-		printf("Enter digits to display... or commands: now - present time, clock - loop program");
-		return 0;
-	}
-	wiringPiSetup();
-	//softToneCreate (BUZZER_PIN);
-	//softToneWrite(BUZZER_PIN, 1000);
-	softPwmCreate(RED_LIGHT_PIN, 100, MAX_POWER);
-	softPwmCreate(GREEN_LIGHT_PIN, 0, MAX_POWER);
-	softPwmCreate(BLUE_LIGHT_PIN, 0, MAX_POWER);
-	initPin(UP_BUTTON_PIN);
-	initPin(DOWN_BUTTON_PIN);
-	initPin(MODE_BUTTON_PIN);
-	wiringPiISR(MODE_BUTTON_PIN,INT_EDGE_RISING,&funcMode);
-	fileDesc = wiringPiI2CSetup(I2CAdress);
-	date = getRTCDate();
-	if (wiringPiSPISetupMode (0, 2000000, 2)) printf("SPI ok");
-			else {printf("SPI NOT ok"); return 0;}
-	long hourDelay = millis();
-	long minuteDelay = hourDelay;
-	do {
-		char _stringToDisplay[8];
-		date = getRTCDate();
-		char* format ="%H%M%S";
-		strftime(_stringToDisplay, 8, format, &date);
+  int curr_arg = 1;
+  while (curr_arg < argc)
+  {
+    if (!strcmp(argv[curr_arg],"24hour"))
+      use24hour = true;
+    else if (!strcmp(argv[curr_arg],"fireworks"))
+    {
+      doFireworks = true;
+      doFadingBlue = false;
+    }
+    else if (!strcmp(argv[curr_arg],"fadingBlue"))
+    {
+      doFireworks = false;
+      doFadingBlue = true;
+    }
+    else
+    {
+      printf("ERROR: %s Unknown argument, \"%s\" on command line.\n\n", argv[0], argv[1]);
+      printf("USAGE: %s            -- Use system clock in 12-hour mode.\n", argv[0]);
+      printf("       %s 24hour     -- use 24-hour mode.\n", argv[0]);
+      printf("       %s fireworks  -- enable fireworks lighting.\n", argv[0]);
+      printf("       %s fadingBlue -- enable fading blue lighting.\n", argv[0]);
+      puts("\nNOTE:  Any combination/order of above arguments is allowed.\n");
+      exit(10);
+    }
+    curr_arg += 1;
+  }
+  wiringPiSetup();
+  //softToneCreate (BUZZER_PIN);
+  //softToneWrite(BUZZER_PIN, 1000);
+  softPwmCreate(RED_LIGHT_PIN, redLight, MAX_POWER);
+  softPwmCreate(GREEN_LIGHT_PIN, greenLight, MAX_POWER);
+  softPwmCreate(BLUE_LIGHT_PIN, blueLight, MAX_POWER);
+  initPin(UP_BUTTON_PIN);
+  initPin(DOWN_BUTTON_PIN);
+  initPin(MODE_BUTTON_PIN);
+  fileDesc = wiringPiI2CSetup(I2CAdress);
+  if (wiringPiSPISetupMode (0, 2000000, 2)) printf("SPI ok");
+  else {printf("SPI NOT ok"); return 0;}
+  long hourDelay = millis();
+  long minuteDelay = hourDelay;
+  do {
+
+    // variables to store date and time components
+    int hours, minutes, seconds, day, month, year;
+
+    // time_t is arithmetic time type
+    time_t now;
+
+    // Obtain current time
+    // time() returns the current time of the system as a time_t value
+    time(&now);
+
+    // localtime converts a time_t value to calendar time and
+    // returns a pointer to a tm structure with its members
+    // filled with the corresponding values
+    struct tm *local = localtime(&now);
+
+    hours = local->tm_hour;      	// get hours since midnight (0-23)
+    minutes = local->tm_min;     	// get minutes passed after the hour (0-59)
+    seconds = local->tm_sec;     	// get seconds passed after minute (0-59)
+
+    day = local->tm_mday;        	// get day of month (1 to 31)
+    month = local->tm_mon + 1;   	// get month of year (0 to 11)
+    year = local->tm_year + 1900;	// get year since 1900
+
+    char _stringToDisplay[8];
+
+    // print local time
+    if (hours < 12 || use24hour)	// before midday
+      sprintf( _stringToDisplay, "%02d%02d%02d", hours, minutes, seconds);
+
+    else	// after midday
+      sprintf( _stringToDisplay, "%02d%02d%02d", hours - 12, minutes, seconds);
+
+    pinMode(LEpin, OUTPUT);
+
+    dotBlink();
+
+    unsigned char buff[8];
+
+    uint32_t var32 = get32Rep(_stringToDisplay, LEFT_REPR_START);
+    var32 = addBlinkTo32Rep(var32);
+    fillBuffer(var32, buff , LEFT_BUFFER_START);
+
+    var32 = get32Rep(_stringToDisplay, RIGHT_REPR_START);
+    var32 = addBlinkTo32Rep(var32);
+    fillBuffer(var32, buff , RIGHT_BUFFER_START);
 
 
-		pinMode(LEpin, OUTPUT);
-
-		dotBlink();
-
-		unsigned char buff[8];
-
-		uint32_t var32 = get32Rep(_stringToDisplay, LEFT_REPR_START);
-		var32 = addBlinkTo32Rep(var32);
-		fillBuffer(var32, buff , LEFT_BUFFER_START);
-
-		var32 = get32Rep(_stringToDisplay, RIGHT_REPR_START);
-		var32 = addBlinkTo32Rep(var32);
-		fillBuffer(var32, buff , RIGHT_BUFFER_START);
-
-		if (digitalRead(UP_BUTTON_PIN) == 0 && (millis() - hourDelay) > DEBOUNCE_DELAY) {
-			updateRTCHour(addSecondsToDate(date, HOUR_IN_SECONDS));
-			hourDelay = millis();
-		}
-		if (digitalRead(DOWN_BUTTON_PIN) == 0 && (millis() - minuteDelay) > DEBOUNCE_DELAY) {
-			updateRTCMinute(addSecondsToDate(date, MINUTE_IN_SECONDS));
-			minuteDelay = millis();
-		}
-		rotateFireWorks();
-		digitalWrite(LEpin, LOW);
-		wiringPiSPIDataRW(0, buff, 8);
-		digitalWrite(LEpin, HIGH);
-		delay (TOTAL_DELAY);
-	}
-	while (true);
-	return 0;
+    //printf("%i,%i,%i\n", redLight, greenLight, blueLight);
+    if (doFireworks)
+      rotateFireWorks();
+    else if (doFadingBlue)
+      fadingBlue();
+    else
+    {
+      redLight = 0;
+      greenLight = 0;
+      blueLight = 100;
+    }
+    softPwmWrite(RED_LIGHT_PIN, redLight);
+    softPwmWrite(GREEN_LIGHT_PIN, greenLight);
+    softPwmWrite(BLUE_LIGHT_PIN, blueLight);
+    digitalWrite(LEpin, LOW);
+    wiringPiSPIDataRW(0, buff, 8);
+    digitalWrite(LEpin, HIGH);
+    delay (TOTAL_DELAY);
+  }
+  while (true);
+  return 0;
 }
