@@ -4,6 +4,7 @@ Description=nixie clock
 After=network.target
 
 [Service]
+Environment=TZ='America/Los_Angeles'
 ExecStart=/nixie/NixieClockRaspberryPi-shaner/DisplayNixie/bin/DisplayNixie
 WorkingDirectory=/tmp
 StandardOutput=inherit
